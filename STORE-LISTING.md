@@ -38,3 +38,7 @@ How it works:
 ## Upload
 Zip: watch-together-extension.zip (in this folder)
 Visibility: Unlisted
+
+## Images (folder: store/)
+- Store icon: store/icon-128.png
+- Screenshot (1280x800): store/screenshot-1280x800.png
