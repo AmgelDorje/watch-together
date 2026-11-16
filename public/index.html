@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Watch Together</title>
+<style>
+  :root { --bg:#0e0f12; --card:#1a1c21; --line:#2a2d34; --text:#f2f2f4; --muted:#9a9ca3; --accent:#ffcf5a; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--bg); color:var(--text); font:16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  button,input { font:inherit; color:inherit; }
+  button { cursor:pointer; border:0; border-radius:12px; padding:12px 20px; background:var(--accent); color:#16130a; font-weight:600; }
+  button.ghost { background:var(--card); color:var(--text); border:1px solid var(--line); }
+  [hidden] { display:none !important; }
+
+  #home { min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; padding:24px; text-align:center; }
+  #home h1 { font-size:40px; margin:0; letter-spacing:-0.02em; }
+  #home p { color:var(--muted); margin:0 0 16px; max-width:360px; }
+  #home button { font-size:18px; padding:16px 32px; }
+
+  #roomView { max-width:1100px; margin:0 auto; padding:16px; display:flex; flex-direction:column; gap:16px; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .who { color:var(--muted); }
+  .who b { color:var(--text); letter-spacing:0.08em; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#4ade80; margin:0 6px 1px 12px; }
+  .dot.off { background:#f87171; }
+
+  #stage { position:relative; width:100%; aspect-ratio:16/9; background:#000; border-radius:16px; overflow:hidden; }
+  #stage video, #stage iframe, #yt { position:absolute; inset:0; width:100%; height:100%; border:0; }
+  #empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); padding:24px; text-align:center; }
+  #tap { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.6); z-index:5; }
+  #tap button { font-size:18px; padding:16px 28px; }
+
+  .sources { display:flex; flex-direction:column; gap:12px; background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; }
+  .sources form { display:flex; gap:8px; }
+  .sources input[type=url], .sources input[type=text] { flex:1; min-width:0; background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:12px 14px; font-size:16px; }
+  .file { display:flex; align-items:center; gap:8px; color:var(--muted); }
+  .file label { color:var(--text); text-decoration:underline; cursor:pointer; }
+  .file input { display:none; }
+  #note { margin:0; color:var(--accent); }
+  #note:empty { display:none; }
+</style>
+</head>
+<body>
+
+<main id="home">
+  <h1>Watch Together</h1>
+  <p>Open the same movie on two devices. Press play here, it plays there.</p>
+  <button id="create">Start a room</button>
+</main>
+
+<main id="roomView" hidden>
+  <header>
+    <div class="who">Room <b id="code"></b><span class="dot" id="dot"></span><span id="people">connecting</span></div>
+    <button class="ghost" id="share">Copy link</button>
+  </header>
+
+  <div id="stage">
+    <div id="empty">Choose what to watch below. Everyone in the room gets it.</div>
+    <video id="video" playsinline controls preload="auto" hidden></video>
+    <div id="yt" hidden></div>
+    <div id="tap" hidden><button id="tapBtn">Tap to join playback</button></div>
+  </div>
+
+  <div class="sources">
+    <form id="srcForm">
+      <input type="text" id="url" inputmode="url" autocomplete="off" placeholder="Paste a YouTube link or a direct video link (.mp4, .m3u8)">
+      <button type="submit">Load</button>
+    </form>
+    <div class="file">or <label for="file">open a movie file on this device</label><input type="file" id="file" accept="video/*,.mkv"></div>
+    <p id="note"></p>
+  </div>
+</main>
+
+<script>
+(function () {
+  var $ = function (s) { return document.querySelector(s); };
+  var me = Math.random().toString(36).slice(2, 10);
+  var params = new URLSearchParams(location.search);
+  var roomId = params.get('r');
+
+  var offset = 0;          // server clock minus this device's clock, ms
+  var state = null;        // shared room state from the server
+  var player = null;       // adapter over <video> or YouTube
+  var loadedKey = null;    // which source is loaded locally
+  var applyingUntil = 0;   // ignore our own player events while we follow the room
+  var localFile = null;    // { name, url } picked on this device
+  var ytApi = null;
+
+  var serverNow = function () { return Date.now() + offset; };
+  function expectedPos() {
+    if (!state) return 0;
+    return state.playing ? state.pos + (serverNow() - state.at) / 1000 : state.pos;
+  }
+  function srcKey(src) {
+    if (!src) return '';
+    return src.kind + ':' + (src.id || src.url || src.name);
+  }
+  function note(t) { $('#note').textContent = t || ''; }
+
+  // ---------- start ----------
+  if (!roomId) {
+    $('#create').onclick = function () {
+      var id = Math.random().toString(36).slice(2, 8);
+      location.search = '?r=' + id;
+    };
+    return;
+  }
+  roomId = roomId.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12);
+  $('#home').hidden = true;
+  $('#roomView').hidden = false;
+  $('#code').textContent = roomId.toUpperCase();
+
+  $('#share').onclick = function () {
+    var link = location.origin + location.pathname + '?r=' + roomId;
+    var done = function () { $('#share').textContent = 'Copied'; setTimeout(function () { $('#share').textContent = 'Copy link'; }, 1500); };
+    if (navigator.share && /iPhone|iPad|Android/.test(navigator.userAgent)) navigator.share({ title: 'Watch with me', url: link }).catch(function () {});
+    else if (navigator.clipboard) navigator.clipboard.writeText(link).then(done, function () { prompt('Copy this link', link); });
+    else prompt('Copy this link', link);
+  };
+
+  // ---------- clock ----------
+  function syncClock() {
+    var best = Infinity, n = 0;
+    function one() {
+      var t0 = Date.now();
+      return fetch('/time', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (j) {
+        var t1 = Date.now();
+        if (t1 - t0 < best) { best = t1 - t0; offset = j.t - (t0 + t1) / 2; }
+        if (++n < 6) return one();
+      });
+    }
+    return one().catch(function () {});
+  }
+
+  function post(body) {
+    body.by = me;
+    return fetch('/action?r=' + roomId, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+    }).catch(function () { note('Lost connection to the room. Retrying...'); });
+  }
+
+  // ---------- players ----------
+  var video = $('#video');
+  function videoAdapter() {
+    return {
+      time: function () { return video.currentTime; },
+      paused: function () { return video.paused; },
+      play: function () { return video.play(); },
+      pause: function () { video.pause(); },
+      seek: function (t) { try { video.currentTime = t; } catch (e) {} }
+    };
+  }
+  ['play', 'pause', 'seeked'].forEach(function (ev) { video.addEventListener(ev, onLocalChange); });
+  video.addEventListener('loadedmetadata', function () { applyRoom(); });
+  video.addEventListener('error', function () {
+    if (video.src) note('This video can’t play in this browser. Try a direct .mp4 link or a file.');
+  });
+
+  function loadYouTubeApi() {
+    if (ytApi) return ytApi;
+    ytApi = new Promise(function (resolve) {
+      window.onYouTubeIframeAPIReady = function () { resolve(window.YT); };
+      var s = document.createElement('script');
+      s.src = 'https://www.youtube.com/iframe_api';
+      document.head.appendChild(s);
+    });
+    return ytApi;
+  }
+  var yt = null;
+  function youtubeAdapter() {
+    return {
+      time: function () { return yt && yt.getCurrentTime ? yt.getCurrentTime() : 0; },
+      paused: function () { var s = yt && yt.getPlayerState ? yt.getPlayerState() : -1; return !(s === 1 || s === 3); },
+      play: function () { yt.playVideo(); return Promise.resolve(); },
+      pause: function () { yt.pauseVideo(); },
+      seek: function (t) { yt.seekTo(t, true); }
+    };
+  }
+
+  function loadSource(src) {
+    loadedKey = srcKey(src);
+    player = null;
+    note('');
+    $('#tap').hidden = true;
+    video.hidden = true; video.pause();
+    $('#yt').hidden = true;
+    if (yt && yt.destroy) { yt.destroy(); yt = null; }
+    if (!document.getElementById('yt')) { var d = document.createElement('div'); d.id = 'yt'; d.hidden = true; $('#stage').appendChild(d); }
+    $('#empty').hidden = !!src;
+    if (!src) return;
+
+    if (src.kind === 'yt') {
+      $('#yt').hidden = false;
+      loadYouTubeApi().then(function (YT) {
+        yt = new YT.Player('yt', {
+          videoId: src.id,
+          playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
+          events: {
+            onReady: function () { player = youtubeAdapter(); applyRoom(); },
+            onStateChange: function (e) { if (e.data === 1 || e.data === 2) onLocalChange(); }
+          }
+        });
+      });
+    } else if (src.kind === 'url') {
+      video.hidden = false;
+      video.src = src.url;
+      player = videoAdapter();
+    } else if (src.kind === 'file') {
+      if (localFile) {
+        video.hidden = false;
+        video.src = localFile.url;
+        player = videoAdapter();
+        if (localFile.name !== src.name) note('Synced to your file “' + localFile.name + '”. The room picked “' + src.name + '” - make sure it’s the same movie.');
+      } else {
+        $('#empty').hidden = false;
+        $('#empty').textContent = 'The room is watching “' + src.name + '”. Open your copy of this movie from the file button below.';
+      }
+    }
+  }
+
+  // Our player changed by a human (play / pause / jump) -> tell the room.
+  function onLocalChange() {
+    if (!player || !state || Date.now() < applyingUntil) return;
+    var playing = !player.paused();
+    var t = player.time();
+    if (playing === state.playing && Math.abs(t - expectedPos()) < 1) return; // nothing really changed
+    var at = serverNow();
+    state = Object.assign({}, state, { playing: playing, pos: t, at: at, by: me });
+    post({ type: 'state', playing: playing, pos: t, at: at });
+  }
+
+  // Make our player match the room.
+  function applyRoom() {
+    if (!player || !state) return;
+    applyingUntil = Date.now() + 1200;
+    var exp = expectedPos();
+    if (Math.abs(player.time() - exp) > 0.5) player.seek(exp);
+    if (state.playing && player.paused()) {
+      var p = player.play();
+      if (p && p.catch) p.catch(function () { $('#tap').hidden = false; });
+    } else if (!state.playing && !player.paused()) {
+      player.pause();
+    }
+  }
+
+  $('#tapBtn').onclick = function () {
+    $('#tap').hidden = true;
+    applyRoom();
+  };
+
+  // Every second: fix drift, and catch blocked autoplay.
+  var stuck = 0;
+  setInterval(function () {
+    if (!player || !state || Date.now() < applyingUntil) return;
+    var t = player.time(), exp = expectedPos();
+    if (state.playing && !player.paused()) {
+      stuck = 0;
+      if (Math.abs(t - exp) > 0.7) { applyingUntil = Date.now() + 1200; player.seek(exp); }
+    } else if (state.playing && player.paused()) {
+      if (++stuck >= 2) $('#tap').hidden = false; // browser blocked play without a tap
+    } else if (!state.playing && player.paused() && Math.abs(t - state.pos) > 1) {
+      onLocalChange(); // jumped while paused (YouTube doesn't fire an event for this)
+    } else {
+      stuck = 0;
+    }
+  }, 1000);
+
+  // ---------- choosing a movie ----------
+  function parseYouTube(u) {
+    var m = u.match(/(?:youtu\.be\/|v=|\/embed\/|\/shorts\/|\/live\/)([A-Za-z0-9_-]{11})/);
+    return m ? m[1] : null;
+  }
+  $('#srcForm').onsubmit = function (e) {
+    e.preventDefault();
+    var u = $('#url').value.trim();
+    if (!u) return;
+    var id = parseYouTube(u);
+    var src = id ? { kind: 'yt', id: id } : { kind: 'url', url: u };
+    $('#url').value = '';
+    post({ type: 'source', src: src });
+  };
+  $('#file').onchange = function () {
+    var f = this.files && this.files[0];
+    if (!f) return;
+    if (localFile) URL.revokeObjectURL(localFile.url);
+    localFile = { name: f.name, url: URL.createObjectURL(f) };
+    if (state && state.src && state.src.kind === 'file' && !player) {
+      loadSource(state.src); // joining a movie the room already picked
+    } else {
+      post({ type: 'source', src: { kind: 'file', name: f.name } });
+    }
+  };
+
+  // ---------- connect ----------
+  syncClock().then(function () {
+    var es = new EventSource('/events?r=' + roomId);
+    es.onopen = function () { $('#dot').className = 'dot'; syncClock(); };
+    es.onerror = function () { $('#dot').className = 'dot off'; $('#people').textContent = 'reconnecting'; };
+    es.onmessage = function (e) {
+      var m = JSON.parse(e.data);
+      if (m.type === 'people') {
+        $('#people').textContent = m.count === 1 ? 'only you here' : m.count + ' devices here';
+      } else if (m.type === 'state') {
+        state = m.state;
+        if (srcKey(state.src) !== loadedKey) loadSource(state.src);
+        else applyRoom();
+      }
+    };
+  });
+  setInterval(syncClock, 60000); // also keeps a free host from sleeping mid-movie
+})();
+</script>
+</body>
+</html>
