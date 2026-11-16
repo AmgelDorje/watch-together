@@ -19,6 +19,14 @@ function render(s) {
   $('#vdot').className = 'dot' + (s.videoHere ? ' on' : '');
   $('#vstatus').textContent = s.videoHere ? 'Video found on this page' : 'No video on this page yet';
   $('#nudge').textContent = (s.nudge > 0 ? '+' : '') + s.nudge + ' s';
+  const d = s.drift;
+  $('#syncrow').hidden = !(d && s.connected);
+  if (d) {
+    const gap = Math.abs(d.diff);
+    $('#sdot').className = 'dot' + (gap < 0.05 ? ' on' : gap < 0.5 ? ' mid' : '');
+    $('#sstatus').textContent = gap < 0.05 ? 'In sync - ' + gap.toFixed(2) + ' s apart'
+      : 'Lining up - ' + gap.toFixed(2) + ' s ' + (d.diff > 0 ? 'ahead' : 'behind');
+  }
 }
 
 const server = () => $('#server').value.trim() || undefined;
@@ -32,8 +40,9 @@ $('#join').onclick = () => {
 };
 $('#code').onkeydown = (e) => { if (e.key === 'Enter') $('#join').click(); };
 $('#leave').onclick = () => send({ cmd: 'leave' });
-$('#plus').onclick = () => send({ cmd: 'nudge', value: cfg.nudge + 0.5 });
-$('#minus').onclick = () => send({ cmd: 'nudge', value: cfg.nudge - 0.5 });
+document.querySelectorAll('[data-step]').forEach((b) => {
+  b.onclick = () => send({ cmd: 'nudge', value: cfg.nudge + Number(b.dataset.step) });
+});
 $('#copy').onclick = () => {
   navigator.clipboard.writeText(cfg.room.toUpperCase());
   $('#copy').textContent = 'Copied';

@@ -91,6 +91,8 @@ chrome.runtime.onConnect.addListener((port) => {
     if (m.type === 'hello' || m.type === 'ping') {
       if (cfg.room && !connected && !streamCtrl) connect();
       if (m.type === 'hello') port.postMessage(stateMsg());
+    } else if (m.type === 'drift') {
+      port.drift = { diff: m.diff, playing: m.playing, at: Date.now() };
     } else if (m.type === 'state') {
       roomState = { ...(roomState || {}), playing: m.playing, pos: m.pos, at: m.at, by: m.by };
       pushState(); // other tabs on this computer follow right away
@@ -115,15 +117,17 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
       pushState();
     }
     const tabId = m.tabId;
-    const videoHere = [...ports].some((p) => p.sender && p.sender.tab && p.sender.tab.id === tabId);
-    reply({ ...cfg, connected, people, videoHere });
+    const here = [...ports].filter((p) => p.sender && p.sender.tab && p.sender.tab.id === tabId);
+    const fresh = here.map((p) => p.drift).filter((d) => d && Date.now() - d.at < 3000);
+    reply({ ...cfg, connected, people, videoHere: here.length > 0, drift: fresh[0] || null });
   });
   return true;
 });
 
 // Free hosting sleeps after ~15 min without requests - check in while in a room.
 setInterval(() => {
-  if (cfg.room) fetch(cfg.server + '/time', { cache: 'no-store' }).catch(() => {});
+  // re-measuring the clock is also the keep-awake request
+  if (cfg.room) syncClock().then(pushState).catch(() => {});
 }, 4 * 60 * 1000);
 
 badge();

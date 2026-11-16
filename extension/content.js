@@ -66,19 +66,44 @@
     port.postMessage({ type: 'state', playing, pos, at, by: me });
   }
 
+  function seekTo(t) {
+    applyingUntil = Date.now() + 1200;
+    try { video.currentTime = t; } catch (e) {}
+  }
+
   // Make our player match the room.
   function apply() {
     if (!video || !state || !room) return;
     applyingUntil = Date.now() + 1200;
-    const t = target();
-    if (Math.abs(video.currentTime - t) > 0.5) { try { video.currentTime = t; } catch (e) {} }
     if (state.playing && video.paused) {
+      if (Math.abs(video.currentTime - target()) > 0.05) seekTo(target());
       const p = video.play();
       if (p && p.catch) p.catch(() => showToast());
-    } else if (!state.playing && !video.paused) {
-      video.pause();
+    } else if (!state.playing) {
+      if (!video.paused) video.pause();
+      setRate(1);
+      if (Math.abs(video.currentTime - target()) > 0.05) seekTo(target()); // same frame when paused
+    } else if (Math.abs(video.currentTime - target()) > 1) {
+      seekTo(target()); // big gap: jump; small gaps are smoothed below
     }
   }
+
+  // Small gaps while playing: play a few % faster/slower until we line up.
+  let rateSet = false;
+  function setRate(r) {
+    if (!video) return;
+    if (r === 1 && !rateSet) return;
+    rateSet = r !== 1;
+    try { video.playbackRate = r; } catch (e) {}
+  }
+  setInterval(() => {
+    if (!video || !state || !room || !state.playing || video.paused || video.seeking) { setRate(1); return; }
+    if (Date.now() < applyingUntil) return;
+    const diff = video.currentTime - target(); // + = we are ahead
+    if (Math.abs(diff) > 1) { setRate(1); seekTo(target()); }
+    else if (Math.abs(diff) > 0.04) setRate(1 - Math.max(-0.05, Math.min(0.05, diff * 0.25)));
+    else if (Math.abs(diff) < 0.02) setRate(1);
+  }, 250);
 
   function showToast() {
     if (toast) return;
@@ -98,11 +123,12 @@
     const v = findVideo();
     if (v) bind(v);
     if (++tick % 20 === 0 && port) port.postMessage({ type: 'ping' });
-    if (!video || !state || !room || Date.now() < applyingUntil) return;
+    if (!video || !state || !room) return;
     const diff = video.currentTime - target();
+    if (port) port.postMessage({ type: 'drift', diff, playing: !video.paused });
+    if (Date.now() < applyingUntil) return;
     if (state.playing && !video.paused) {
-      stuck = 0; hideToast();
-      if (Math.abs(diff) > 0.7) { applyingUntil = Date.now() + 1200; video.currentTime = target(); }
+      stuck = 0; hideToast(); // drift is handled by the speed controller
     } else if (state.playing && video.paused) {
       if (++stuck >= 2) showToast(); // browser blocked play without a click
     } else {
