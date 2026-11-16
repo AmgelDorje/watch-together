@@ -95,6 +95,11 @@ const server = http.createServer(async (req, res) => {
     return fs.createReadStream(path.join(__dirname, 'public', 'index.html')).pipe(res);
   }
 
+  if (u.pathname === '/privacy') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    return fs.createReadStream(path.join(__dirname, 'public', 'privacy.html')).pipe(res);
+  }
+
   res.writeHead(404);
   res.end('Not found');
 });
