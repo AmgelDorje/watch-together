@@ -1,6 +1,6 @@
 // Watch Together - background. Holds the live connection to the room server
 // and relays room state to every page that has a video.
-const DEFAULT_SERVER = 'http://localhost:8787';
+const DEFAULT_SERVER = 'https://watch-together-yzqa.onrender.com';
 
 let cfg = { server: DEFAULT_SERVER, room: '', nudge: 0 };
 let roomState = null;
@@ -11,7 +11,9 @@ let streamCtrl = null;
 const ports = new Set();  // one per frame that has a video
 
 const ready = chrome.storage.local.get(['server', 'room', 'nudge']).then((s) => {
-  cfg = { server: s.server || DEFAULT_SERVER, room: s.room || '', nudge: Number(s.nudge) || 0 };
+  // an old local-only address from early testing falls back to the live server
+  const server = s.server && !/localhost|127\.0\.0\.1/.test(s.server) ? s.server : DEFAULT_SERVER;
+  cfg = { server, room: s.room || '', nudge: Number(s.nudge) || 0 };
   if (cfg.room) connect();
 });
 

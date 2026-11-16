@@ -18,4 +18,4 @@ Press play on your side, it plays on theirs.
 3. Play / pause / skip on either side - the other follows.
 4. Sites with different intros: use -0.5s / +0.5s until it lines up.
 
-The server address is under "Server" in the add-on (default http://localhost:8787 - this computer only until the server is put online).
+The server address is under "Server" in the add-on (default https://watch-together-yzqa.onrender.com).
